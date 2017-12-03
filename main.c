@@ -44,7 +44,12 @@ static const float *const b_cos_ifacs[] =
 	b_cos_ifac1,
 	b_cos_ifac2,
 	b_cos_ifac3,
-	b_cos_ifac4
+	b_cos_ifac4,
+	b_cos_ifac5,
+	b_cos_ifac6,
+	b_cos_ifac7,
+	b_cos_ifac8,
+	b_cos_ifac9,
 };
 
 struct b_cos_2d
@@ -58,6 +63,9 @@ struct b_cos_2d
 
 	float scale_fac;
 	float *xfac;
+	float *x_buffer;
+	unsigned x_buffer_start, x_buffer_offset;
+
 	float *yfac0;
 	float *y_buf_expand;
 	float *y_sum_fac;
@@ -96,6 +104,8 @@ static void _expand_x(
 	const png_uint_16 *src_row,
 	float *dest_row)
 {
+	// printf("%zd\n", (src_row - self->src) / (self->src_width * 4));
+
 	const float *xfac0 = self->xfac;
 
 	float sum_fac[4];
@@ -161,9 +171,22 @@ inline const png_uint_16 *_y_seek(const struct b_cos_2d *self, unsigned y)
 	return self->src + self->src_width * 4 * y;
 }
 
+static float *_x_buffer_cache(const struct b_cos_2d *self, unsigned y)
+{
+	// TODO Replace these.
+	assert(y >= self->x_buffer_start);
+	assert(y < self->x_buffer_start + B_COS_EDGE(self->radius));
+	return
+		self->x_buffer +
+		self->dest_width * 4 * ((self->x_buffer_offset + y - self->x_buffer_start) % B_COS_EDGE(self->radius));
+}
+
 static void _edge_y(const struct b_cos_2d *self, int src_y, int dest_y)
 {
 	b_cos_edge(self->yfac0, self->radius, b_cos_ifacs[self->radius], self->src_height, self->dest_height, dest_y);
+
+	for(unsigned i = 0; i != B_COS_EDGE(self->radius); ++i)
+		self->yfac0[i] -= 0.5f;
 
 	for(unsigned x = 0; x != self->dest_width * 4; ++x)
 		self->y_sum_fac[x] = 0;
@@ -177,9 +200,14 @@ static void _edge_y(const struct b_cos_2d *self, int src_y, int dest_y)
 			lo = self->src_height - 1;
 		assert(lo >= 0);
 		assert((unsigned)lo < self->src_height);
-		_expand_x(self, _y_seek(self, lo), self->y_buf_expand);
+
+		// _expand_x(self, _y_seek(self, lo), self->y_buf_expand);
+		// const float *x_src = self->y_buf_expand;
+
+		const float *x_src = _x_buffer_cache(self, lo);
+
 		for(unsigned x = 0; x != self->dest_width * 4; ++x)
-			self->y_sum_fac[x] += self->y_buf_expand[x] * (self->yfac0[i] + 0.5f);
+			self->y_sum_fac[x] += x_src[x] * self->yfac0[i];
 	}
 }
 
@@ -191,6 +219,9 @@ void _mul_add_x(unsigned dest_width, float *src, float *dest, float fac)
 
 bool b_cos_2d_init(struct b_cos_2d *self)
 {
+	assert(self->src_width);
+	assert(self->src_height);
+
 	// TODO: Take repeat into account.
 	self->xfac = malloc(B_COS_EDGE(self->radius) * (self->dest_width + 1) * sizeof(float));
 
@@ -203,6 +234,28 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 	}
 
 	self->scale_fac = (float)self->dest_width * self->dest_height / (self->src_width * self->src_height);
+
+	self->x_buffer = malloc(self->dest_width * 4 * sizeof(float) * B_COS_EDGE(self->radius));
+	self->x_buffer_start = 0;
+	self->x_buffer_offset = 0;
+	{
+		const png_uint_16 *src_row = self->src;
+		float *dest_row = self->x_buffer;
+		for(unsigned y = 0; y != B_COS_EDGE(self->radius); ++y)
+		{
+			if(y < self->dest_height)
+			{
+				_expand_x(self, src_row, dest_row);
+				src_row += self->src_width * 4;
+			}
+			else
+			{
+				memcpy(dest_row, dest_row - self->dest_width * 4, sizeof(float) * 4 * self->dest_width);
+			}
+
+			dest_row += self->dest_width * 4;
+		}
+	}
 
 	self->yfac0 = malloc(B_COS_EDGE(self->radius) * sizeof(float));
 
@@ -221,82 +274,6 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 	return true;
 }
 
-#if 0
-void b_cos_2d_row(struct b_cos_2d *self, png_uint_16 *dest_row)
-{
-#if 0
-	if(y < src_image.height)
-	{
-		memcpy(dest_row, src_row, (src_image.width < self->dest_width ? src_image.width : self->dest_width) * 8);
-		_expand_x(xfac, self->radius, src_image.width, src_row, self->dest_width, dest_row);
-		src_row += src_image.width * PNG_IMAGE_PIXEL_CHANNELS(src_image.format);
-	}
-#endif
-
-	unsigned src_y0 = self->y * self->src_height / self->dest_height; // TODO: Division's slow.
-	b_cos_edge(self->yfac1, self->radius, b_cos_ifacs[self->radius], self->src_height, self->dest_height, self->y + 1);
-
-	// unsigned ymags_len = gap ? result = EXIT_SUCCESS;B_COS_EDGE(self->radius) * 2 : src_y1 + self->radius + 1 - (src_y0 - self->radius);
-
-	/*
-	// TODO Trash, right?
-	for(unsigned i = 0; i != ymags_len; ++i)
-		ymags[i] = 1;
-	for(unsigned i = 0; i != B_COS_EDGE(self->radius); ++i)
-	{
-		ymags[i] += yfac0[i] - 0.5f;
-		ymags[i + ymags_len - self->radius - 1] -= yfac1[i] + 0.5f;
-	}
-	*/
-
-	// TODO: Probably better to optimize expand_x first.
-	// Next up: add_mul existing rows.
-
-	const png_uint_16 *src_row = self->src + self->src_width * 4 * src_y0;
-
-	ptrdiff_t stride = self->dest_width * 4;
-#if 1
-	_expand_x(self, src_row, self->y_buffer);
-	for(unsigned i = 0; i != stride; ++i)
-		self->y_buffer[i] *= (float)self->src_height / self->dest_height;
-#endif
-
-#if 0
-	unsigned src_y1 = (self->y + 1) * self->src_height / self->dest_height;
-	const png_uint_16 *src_row1 = src_buffer + src_image.width * 4 * src_y1;
-	// bool gap = (int)src_y0 + (int)self->radius < (int)src_y1 - (int)self->radius;
-
-	_expand_x(xfac, self->radius, src_image.width, src_row, self->dest_width, y_buffer + stride * 2);
-
-	_expand_x(xfac, self->radius, src_image.width, src_row1, self->dest_width, y_buffer + stride * 3);
-
-	_clear_x(y_buffer, self->dest_width);
-	_mul_add_x(self->dest_width, y_buffer + stride * 2, y_buffer, -yfac0[0]);
-	_mul_add_x(self->dest_width, y_buffer + stride * 3, y_buffer, yfac1[0]);
-#endif
-
-#if 0
-	unsigned y_extent = gap ?
-		while(y_buffer_end <)
-#endif
-
-	for(unsigned i = 0; i != self->dest_width; ++i)
-	{
-		dest_row[i * 4    ] = _clip(self->scale_fac * self->y_buffer[i * 4]);
-		dest_row[i * 4 + 1] = _clip(self->scale_fac * self->y_buffer[i * 4 + 1]);
-		dest_row[i * 4 + 2] = _clip(self->scale_fac * self->y_buffer[i * 4 + 2]);
-		dest_row[i * 4 + 3] = _clip(self->scale_fac * self->y_buffer[i * 4 + 3]);
-	}
-
-	float *temp = self->yfac0;
-	self->yfac0 = self->yfac1;
-	self->yfac1 = temp;
-
-	++self->y;
-}
-#endif
-
-#if 1
 void b_cos_2d_row(struct b_cos_2d *self, png_uint_16 *dest_row)
 {
 	unsigned src_y1 = self->src_y0 + self->y_src_jump;
@@ -314,16 +291,54 @@ void b_cos_2d_row(struct b_cos_2d *self, png_uint_16 *dest_row)
 	for(unsigned x = 0; x != self->dest_width * 4; ++x)
 		self->y_sum[x] = 0;
 
-	for(int i = (int)self->src_y0 - (int)self->radius; i < (int)src_y1 - (int)self->radius; ++i)
+	// Slide the row cache forwards.
+	// TODO: Refactor with what's in b_cos_2d_init.
 	{
-		int src_y = i;
-		if(src_y < 0)
-			src_y = 0;
+		int new_x_buffer_start = (int)src_y1 - (int)self->radius;
+		if(new_x_buffer_start < 0)
+			new_x_buffer_start = 0;
+		if((unsigned)new_x_buffer_start >= self->src_height)
+			new_x_buffer_start = self->src_height - 1;
+		assert((unsigned)new_x_buffer_start >= self->x_buffer_start);
+		unsigned advance = new_x_buffer_start - self->x_buffer_start;
+		if(advance >= B_COS_EDGE(self->radius))
+		{
+			advance = B_COS_EDGE(self->radius);
+			self->x_buffer_offset = 0;
+		}
+		else
+		{
+			self->x_buffer_offset = (self->x_buffer_offset + advance) % B_COS_EDGE(self->radius);
+		}
+
+		self->x_buffer_start = new_x_buffer_start;
+		unsigned new_end = new_x_buffer_start + B_COS_EDGE(self->radius);
+
+		for(unsigned y = new_end - advance; y != new_end; ++y)
+			_expand_x(self, _y_seek(self, y < self->src_height ? y : self->src_height - 1), _x_buffer_cache(self, y));
+	}
+
+	for(int i = (int)self->src_y0 + (int)self->radius + 1; i < (int)src_y1 + (int)self->radius + 1; ++i)
+	{
+		unsigned src_y = i;
+		if(src_y >= self->src_height)
+			src_y = self->src_height - 1;
 		assert(src_y >= 0);
 		assert((unsigned)src_y < self->src_height);
-		_expand_x(self, _y_seek(self, src_y), self->y_buf_expand);
+
+		const float *row;
+		if(src_y >= self->x_buffer_start)
+		{
+			row = _x_buffer_cache(self, src_y);
+		}
+		else
+		{
+			_expand_x(self, _y_seek(self, src_y), self->y_buf_expand);
+			row = self->y_buf_expand;
+		}
+
 		for(unsigned x = 0; x != self->dest_width * 4; ++x)
-			self->y_sum[x] += self->y_buf_expand[x];
+			self->y_sum[x] += row[x];
 	}
 
 	for(unsigned x = 0; x != self->dest_width * 4; ++x)
@@ -340,7 +355,14 @@ void b_cos_2d_row(struct b_cos_2d *self, png_uint_16 *dest_row)
 	self->src_y0 = src_y1;
 	++self->y;
 }
-#endif
+
+unsigned _strtou(const char *nptr, const char **endptr)
+{
+	unsigned long result = strtoul(nptr, (char **)endptr, 10);
+	if(result > UINT_MAX)
+		*endptr = nptr;
+	return result;
+}
 
 int main(int argc, char **argv)
 {
@@ -352,21 +374,21 @@ int main(int argc, char **argv)
 
 	const char *src_png_name = argv[1];
 	const char *dest_png_name = argv[2];
-	char *str_end;
+	const char *str_end;
 
 	struct b_cos_2d b_cos;
-	b_cos.dest_width = strtoul(argv[3], &str_end, 10);
+	b_cos.dest_width = _strtou(argv[3], &str_end);
 	if(*str_end || !b_cos.dest_width)
-		return _error(*argv, "dest_width must an integer greater than 0\n");
+		return _error(*argv, "dest_width must an integer greater than 0.\n");
 
-	b_cos.dest_height = strtoul(argv[4], &str_end, 10);
+	b_cos.dest_height = _strtou(argv[4], &str_end);
 	if(*str_end || !b_cos.dest_height)
-		return _error(*argv, "dest_height must an integer greater than 0\n");
+		return _error(*argv, "dest_height must an integer greater than 0.\n");
 
-	b_cos.radius = strtoul(argv[5], &str_end, 10);
+	b_cos.radius = _strtou(argv[5], &str_end);
 	if(*str_end || b_cos.radius >= arraysize(b_cos_ifacs))
 	{
-		fprintf(stderr, "%s: radius must an integer between 0 and %zd\n", *argv, arraysize(b_cos_ifacs) - 1);
+		fprintf(stderr, "%s: radius must an integer between 0 and %zd.\n", *argv, arraysize(b_cos_ifacs) - 1);
 		return EXIT_FAILURE;
 	}
 
@@ -461,6 +483,9 @@ int main(int argc, char **argv)
 					for(unsigned y = 0; y != b_cos.dest_height; ++y)
 					{
 						b_cos_2d_row(&b_cos, dest_row);
+
+						// PNG compression takes up most of the time here.
+						// Benchmarking? Comment png_write_rows out.
 						png_write_rows(dest_png, (png_bytepp)&dest_row, 1);
 					}
 
