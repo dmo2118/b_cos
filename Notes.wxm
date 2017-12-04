@@ -1,0 +1,55 @@
+/* [wxMaxima batch file version 1] [ DO NOT EDIT BY HAND! ]*/
+/* [ Created with wxMaxima version 15.08.2 ] */
+
+/* [wxMaxima: input   start ] */
+diam(r) := r*2+1;
+a0(i,r) := 2*%pi*(i+1) / diam(r);
+/* [wxMaxima: input   end   ] */
+
+/* [wxMaxima: input   start ] */
+plot2d([cos(x*a0(0,2))+(-1)^0,cos(x*a0(1,2))+(-1)^1,cos(x*a0(2,2))+(-1)^2],[x,-2.5,2.5]);
+/* [wxMaxima: input   end   ] */
+
+/* [wxMaxima: input   start ] */
+/*
+integrate(b_cos(x,r,F0),x,0,j+1/2) = 1/2 for j: [0..r]
+integrate(sum(F0[i]*(cos(x*a0(i,r))+(-1)^i),i,0,r),x,0,j+1/2) = 1/2 for j: [0..r]
+sum(F0[i]*integrate(cos(x*a0(i,r))+(-1)^i,x,0,j+1/2),i,0,r) = 1/2 for j: [0..r]
+sum(F0[i]*(sin((j+1/2)*a0(i,r))/a0(i,r) + (j+1/2)*(-1)^i),i,0,r) = 1/2 for j: [0..r]
+*/
+
+a(r) := genmatrix(lambda([j,i], sin((j+1/2)*a0(i,r))/a0(i,r) + (j+1/2)*(-1)^i),r,r,0,0);
+b(r) := transpose(makelist(1/2,r+1));
+
+/* Odd Maxima behavior: matrix([1]).matrix([1]) = 1, instead of matrix([1]). */
+fac(r) := if r = 0 then [1] else transpose(invert(float(a(r))) . b(r))[1];
+ifac(r) := makelist(fac(r)[i+1] / float(a0(i,r)), i, 0, r);
+/* [wxMaxima: input   end   ] */
+
+/* [wxMaxima: input   start ] */
+ifac(9);
+/* [wxMaxima: input   end   ] */
+
+/* [wxMaxima: input   start ] */
+/* b_cos0(x,r,Fac) := sum(Fac[i+1]*(cos(x*a0(i,r)) + (-1)^i),i,0,r); */
+/* b_cos0(x,r,Fac) := sum(Fac[i+1]*cos(x*a0(i,r)),i,0,r) + sum(Fac[i+1]*(-1)^i,i,0,r); */
+b_cos0(x,r,Fac) := sum(Fac[i+1]*cos(x*a0(i,r)),i,0,r) + (1/diam(r));
+b_cos(x,r,Fac) := if x >= -(r+1/2) and x <= r+1/2 then b_cos0(x,r,Fac) else 0;
+
+ib_cos0(x,r,iFac) := (x/diam(r)) + sum(iFac[i+1]*sin(x*a0(i,r)),i,0,r);
+ib_cos(x,r,iFac) :=
+    if x < -(r+1/2) then -1/2
+    elseif x > r+1/2 then 1/2
+    else ib_cos0(x,r,iFac);
+/* [wxMaxima: input   end   ] */
+
+/* [wxMaxima: input   start ] */
+F2: fac(2);
+iF2: ifac(2);
+F3: fac(3);
+iF3: ifac(3);
+plot2d([b_cos(x,2,F2),ib_cos(x,2,iF2),b_cos(x,3,F3),ib_cos(x,3,iF3)],[x,-(3+0.5),3+0.5]);
+/* [wxMaxima: input   end   ] */
+
+/* Maxima can't load/batch files which end with a comment! */
+"Created with wxMaxima"$

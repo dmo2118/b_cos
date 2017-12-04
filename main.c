@@ -2,6 +2,8 @@
 
 #include "b_cos.h"
 
+// Current Ubuntu LTS provides both libpng 1.2 and 1.6, but many of the other development libraries still require 1.2, and
+// libpng16-dev can't be installed in parallel with libpng12-dev. This code uses 1.2.
 #include "png.h"
 
 #include <assert.h>
@@ -19,14 +21,14 @@ static int _error(const char *prefix, const char *message)
 	return EXIT_FAILURE;
 }
 
-static int _png_error(const char *png_name, png_image *image)
-{
-	return _error(png_name, image->message);
-}
-
 static int _error_errno(const char *prefix, int error)
 {
 	return _error(prefix, strerror(error));
+}
+
+static int _error_nomem(const char *prefix)
+{
+	return _error_errno(prefix, ENOMEM);
 }
 
 static inline png_uint_16 _clip(double x)
@@ -52,13 +54,15 @@ static const float *const b_cos_ifacs[] =
 	b_cos_ifac9,
 };
 
+typedef uint8_t b_cos_2d_src_px; // Too many underscores?
+
 struct b_cos_2d
 {
-	unsigned src_width;
-	unsigned src_height;
-	const png_uint_16 *src;
-	unsigned dest_width;
-	unsigned dest_height;
+	unsigned long src_width;
+	unsigned long src_height;
+	const b_cos_2d_src_px *src;
+	unsigned long dest_width;
+	unsigned long dest_height;
 	unsigned radius;
 
 	float scale_fac;
@@ -78,7 +82,7 @@ struct b_cos_2d
 static void _edge_x(
 	const struct b_cos_2d *self,
 	const float *xfac,
-	const png_uint_16 *src_row,
+	const b_cos_2d_src_px *src_row,
 	int src_x,
 	float *sum_fac)
 {
@@ -101,7 +105,7 @@ static void _edge_x(
 
 static void _expand_x(
 	const struct b_cos_2d *self,
-	const png_uint_16 *src_row,
+	const b_cos_2d_src_px *src_row,
 	float *dest_row)
 {
 	// printf("%zd\n", (src_row - self->src) / (self->src_width * 4));
@@ -166,7 +170,7 @@ void _clear_x(float *row, unsigned dest_width)
 		row[i] = 0;
 }
 
-inline const png_uint_16 *_y_seek(const struct b_cos_2d *self, unsigned y)
+static inline const b_cos_2d_src_px *_y_seek(const struct b_cos_2d *self, unsigned y)
 {
 	return self->src + self->src_width * 4 * y;
 }
@@ -233,13 +237,13 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 			xfac0[i] += 0.5;
 	}
 
-	self->scale_fac = (float)self->dest_width * self->dest_height / (self->src_width * self->src_height);
+	self->scale_fac = (65535 / 255) * (float)self->dest_width * self->dest_height / (self->src_width * self->src_height);
 
 	self->x_buffer = malloc(self->dest_width * 4 * sizeof(float) * B_COS_EDGE(self->radius));
 	self->x_buffer_start = 0;
 	self->x_buffer_offset = 0;
 	{
-		const png_uint_16 *src_row = self->src;
+		const b_cos_2d_src_px *src_row = self->src;
 		float *dest_row = self->x_buffer;
 		for(unsigned y = 0; y != B_COS_EDGE(self->radius); ++y)
 		{
@@ -379,11 +383,11 @@ int main(int argc, char **argv)
 	struct b_cos_2d b_cos;
 	b_cos.dest_width = _strtou(argv[3], &str_end);
 	if(*str_end || !b_cos.dest_width)
-		return _error(*argv, "dest_width must an integer greater than 0.\n");
+		return _error(*argv, "dest_width must an integer greater than 0.");
 
 	b_cos.dest_height = _strtou(argv[4], &str_end);
 	if(*str_end || !b_cos.dest_height)
-		return _error(*argv, "dest_height must an integer greater than 0.\n");
+		return _error(*argv, "dest_height must an integer greater than 0.");
 
 	b_cos.radius = _strtou(argv[5], &str_end);
 	if(*str_end || b_cos.radius >= arraysize(b_cos_ifacs))
@@ -394,38 +398,116 @@ int main(int argc, char **argv)
 
 	// Rescaling an image can work from a moving window of several adjacent rows to output rows in the resampled image. If PNG
 	// always supported row-at-a-time loading, then there wouldn't be any need to load the entire image into memory. But PNG
-	// supports interlacing, so to handle that, let's just use png_image.
-
-	png_image src_image = {.version = PNG_IMAGE_VERSION};
-	if(!png_image_begin_read_from_file(&src_image, src_png_name))
-		return _png_error(src_png_name, &src_image);
-
-	// src_image.format = src_image.format & (PNG_FORMAT_FLAG_ALPHA | PNG_FORMAT_FLAG_COLOR) | PNG_FORMAT_FLAG_LINEAR;
-	src_image.format = PNG_FORMAT_FLAG_ALPHA | PNG_FORMAT_FLAG_COLOR | PNG_FORMAT_FLAG_LINEAR;
-	// src_image.flags |= PNG_IMAGE_FLAG_16BIT_sRGB;
-
-	png_uint_16 *src_buffer = malloc(PNG_IMAGE_SIZE(src_image));
-	if(!src_buffer)
-	{
-		png_image_free(&src_image);
-		return _error_errno(*argv, ENOMEM);
-	}
-
-	if(!png_image_finish_read(&src_image, 0, src_buffer, PNG_IMAGE_ROW_STRIDE(src_image), NULL))
-	{
-		free(src_buffer);
-		png_image_free(&src_image);
-		return _png_error(src_png_name, &src_image);
-	}
-
-	b_cos.src = src_buffer;
-	b_cos.src_width = src_image.width;
-	b_cos.src_height = src_image.height;
-
+	// supports interlacing, so to handle that, let's just use png_read_png. png_image is another possibility, but current
+	// Ubuntu LTS doesn't have that.
 	int result = EXIT_FAILURE;
 
+	FILE *src_fp = fopen(src_png_name, "rb");
+	if(!src_fp)
+	{
+		return _error_errno(src_png_name, errno);
+	}
+	else
+	{
+		unsigned char src_header[8];
+		size_t header_size = fread(src_header, 1, sizeof(src_header), src_fp);
+		if(header_size != sizeof(src_header) && ferror(src_fp))
+		{
+			_error(src_png_name, "I/O error"); // C stdio doesn't do error codes.
+		}
+		else if(png_sig_cmp(src_header, 0, header_size)) // TODO: Wait, do I really need this?
+		{
+			_error(src_png_name, "not a PNG.");
+		}
+		else
+		{
+			png_structp src_png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+			if (!src_png)
+			{
+				_error_nomem(*argv);
+			}
+			else
+			{
+				png_infop src_info = NULL;
+
+				if(!setjmp(png_jmpbuf(src_png)))
+				{
+					src_info = png_create_info_struct(src_png);
+					if(!src_info)
+					{
+						_error_nomem(*argv);
+						longjmp(png_jmpbuf(src_png), 1);
+					}
+
+					png_init_io(src_png, src_fp);
+					png_set_sig_bytes(src_png, header_size);
+
+					png_read_info(src_png, src_info);
+					int bit_depth, color_type;
+					png_get_IHDR(
+						src_png, 
+						src_info, 
+						&b_cos.src_width, 
+						&b_cos.src_height, 
+						&bit_depth, 
+						&color_type, 
+						NULL, 
+						NULL, 
+						NULL);
+
+					png_set_expand(src_png);
+					if(bit_depth == 16)
+						png_set_strip_16(src_png);
+					png_color_8 *sig_bit;
+					if(png_get_sBIT(src_png, src_info, &sig_bit))
+						png_set_shift(src_png, sig_bit);
+					if(bit_depth < 8)
+						png_set_packing(src_png);
+					if(!(color_type & PNG_COLOR_MASK_ALPHA))
+						png_set_filler(src_png, 0xff, PNG_FILLER_AFTER);
+					if((color_type & ~(int)PNG_COLOR_MASK_ALPHA) == PNG_COLOR_TYPE_GRAY)
+						png_set_gray_to_rgb(src_png);
+
+					// TODO: Unchecked malloc().
+					b_cos.src = malloc(b_cos.src_width * b_cos.src_height * 4);
+					png_byte **row_pointers = malloc(sizeof(png_byte *) * b_cos.src_height);
+
+					for(unsigned y = 0; y != b_cos.src_height; ++y)
+						row_pointers[y] = (uint8_t *)b_cos.src + b_cos.src_width * 4 * y;
+					png_read_image(src_png, row_pointers);
+					free(row_pointers);
+
+					// libpng 1.2 doesn't have PNG_TRANSFORM_EXPAND_16.
+					/*
+					png_read_png(
+						src_png,
+						src_info,
+						PNG_TRANSFORM_STRIP_16 | PNG_TRANSFORM_EXPAND | PNG_TRANSFORM_SHIFT | PNG_TRANSFORM_GRAY_TO_RGB,
+						NULL);
+					*/
+
+					
+
+					// png_get_rows(src_png, src_info);
+
+					// b_cos.src = NULL;
+					// b_cos.src_width = src_image.width;
+					// b_cos.src_height = src_image.height;
+
+					result = EXIT_SUCCESS;
+				}
+
+				png_destroy_read_struct(&src_png, &src_info, (png_infopp)NULL);
+			}
+		}
+
+		fclose(src_fp);
+	}
+
+	const unsigned channels = 4;
+
 	// TODO: Unchecked unfreed malloc().
-	uint16_t *dest_row = malloc(PNG_IMAGE_PIXEL_CHANNELS(src_image.format) * b_cos.dest_width * sizeof(*dest_row));
+	uint16_t *dest_row = malloc(channels * b_cos.dest_width * sizeof(*dest_row));
 
 	FILE *dest_fp = fopen(dest_png_name, "wb");
 	if(!dest_fp)
@@ -438,23 +520,29 @@ int main(int argc, char **argv)
 		static_assert(CHAR_BIT == 8, "8 bits per byte. No exceptions.");
 
 		png_structp dest_png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-		png_infop dest_info = NULL;
-		if(dest_png)
+		if(!dest_png)
 		{
+			_error_nomem(*argv);
+		}
+		else
+		{
+			png_infop dest_info = NULL;
+
 			if(!setjmp(png_jmpbuf(dest_png)))
 			{
 				dest_info = png_create_info_struct(dest_png);
 				if(!dest_info)
 				{
-					_error_errno(*argv, ENOMEM);
+					_error_nomem(*argv);
 					longjmp(png_jmpbuf(dest_png), 1);
 				}
 
 				png_init_io(dest_png, dest_fp);
 
-				int color_type = src_image.format & PNG_FORMAT_FLAG_ALPHA ? PNG_COLOR_MASK_ALPHA : 0;
-				if(src_image.format & PNG_FORMAT_FLAG_COLOR)
-					color_type |= PNG_COLOR_MASK_COLOR;
+				int color_type = PNG_COLOR_TYPE_RGB_ALPHA;
+				// int color_type = src_image.format & PNG_FORMAT_FLAG_ALPHA ? PNG_COLOR_MASK_ALPHA : 0;
+				// if(src_image.format & PNG_FORMAT_FLAG_COLOR)
+				//	color_type |= PNG_COLOR_MASK_COLOR;
 				png_set_IHDR(
 					dest_png,
 					dest_info,
@@ -466,8 +554,9 @@ int main(int argc, char **argv)
 					PNG_COMPRESSION_TYPE_DEFAULT,
 					PNG_FILTER_TYPE_DEFAULT);
 
+				// TODO: Inherit gamma/chromaticity/sRGB from source image.
 				// png_set_sRGB_gAMA_and_cHRM(dest_png, dest_info, PNG_sRGB_INTENT_RELATIVE);
-				png_set_gAMA(dest_png, dest_info, 1.0);
+				// png_set_gAMA(dest_png, dest_info, 1.0);
 				// png_set_cHRM(dest_png, dest_info, 0.3127, 0.3290, 0.6400, 0.3300, 0.3000, 0.6000, 0.1500, 0.0600);
 
 				png_write_info(dest_png, dest_info);
@@ -500,6 +589,6 @@ int main(int argc, char **argv)
 		fclose(dest_fp);
 	}
 
-	free(src_buffer);
+	free((void *)b_cos.src);
 	return result;
 }

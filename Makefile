@@ -1,6 +1,6 @@
 # GPROF=-pg
 
-CFLAGS=-Wall -O3 -g -DNDEBUG $(GPROF)
+CFLAGS=-Wall -g -DNDEBUG $(GPROF) # -O3
 LDLIBS=-lpng -lm $(GPROF)
 
 b_cos: main.o b_cos.o
