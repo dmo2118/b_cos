@@ -1,5 +1,3 @@
-// TODO: Test on macOS.
-
 #include "b_cos.h"
 
 // Current Ubuntu LTS provides both libpng 1.2 and 1.6, but many of the other development libraries still require 1.2, and
@@ -64,11 +62,11 @@ typedef uint8_t b_cos_2d_src_px; // Too many underscores?
 
 struct b_cos_2d
 {
-	unsigned long src_width;
-	unsigned long src_height;
+	png_uint_32 src_width;
+	png_uint_32 src_height;
 	const b_cos_2d_src_px *src;
-	unsigned long dest_width;
-	unsigned long dest_height;
+	png_uint_32 dest_width;
+	png_uint_32 dest_height;
 	unsigned radius;
 
 	float scale_fac;
@@ -302,7 +300,7 @@ void b_cos_2d_row(struct b_cos_2d *self, png_uint_16 *dest_row)
 		self->y_sum[x] = 0;
 
 	// Slide the row cache forwards.
-	// TODO: Refactor with what's in b_cos_2d_init.
+	// This could be refactored with what's in b_cos_2d_init...?
 	{
 		int new_x_buffer_start = (int)src_y1 - (int)self->radius;
 		if(new_x_buffer_start < 0)
@@ -592,6 +590,8 @@ int main(int argc, char **argv)
 
 				if(b_cos_2d_init(&b_cos))
 				{
+					png_write_info(dest_png, dest_info);
+
 					for(unsigned y = 0; y != b_cos.dest_height; ++y)
 					{
 						b_cos_2d_row(&b_cos, dest_row);
@@ -609,7 +609,7 @@ int main(int argc, char **argv)
 						elapsed,
 						1e-6 * ((b_cos.src_width * b_cos.src_height) + (b_cos.dest_width * b_cos.dest_height)) / elapsed);
 #endif
-					png_write_info(dest_png, dest_info);
+					png_write_end(dest_png, NULL);
 					result = EXIT_SUCCESS;
 				}
 			}
