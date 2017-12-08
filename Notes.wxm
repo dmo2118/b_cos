@@ -2,48 +2,94 @@
 /* [ Created with wxMaxima version 15.08.2 ] */
 
 /* [wxMaxima: input   start ] */
+/*
+Step 1: define some functions we'll need a lot. r (short for radius) is the
+number of pixels extending out in a square from a central pixel.
+
+I just mentioned pixels, but there's no reason that this can't be used in a 1-
+or 3-dimensional situation.
+*/
+
 diam(r) := r*2+1;
 a0(i,r) := 2*%pi*(i+1) / diam(r);
 /* [wxMaxima: input   end   ] */
 
 /* [wxMaxima: input   start ] */
+/*
+Here's our basis functions: cosine waves, of increasing frequency, and with
+values and derivatives = 0 at +/-(r + 1/2). This example uses r = 2.
+*/
+
 plot2d([cos(x*a0(0,2))+(-1)^0,cos(x*a0(1,2))+(-1)^1,cos(x*a0(2,2))+(-1)^2],[x,-2.5,2.5]);
 /* [wxMaxima: input   end   ] */
 
 /* [wxMaxima: input   start ] */
 /*
-integrate(b_cos(x,r,F0),x,0,j+1/2) = 1/2 for j: [0..r]
-integrate(sum(F0[i]*(cos(x*a0(i,r))+(-1)^i),i,0,r),x,0,j+1/2) = 1/2 for j: [0..r]
-sum(F0[i]*integrate(cos(x*a0(i,r))+(-1)^i,x,0,j+1/2),i,0,r) = 1/2 for j: [0..r]
-sum(F0[i]*(sin((j+1/2)*a0(i,r))/a0(i,r) + (j+1/2)*(-1)^i),i,0,r) = 1/2 for j: [0..r]
-*/
+Add them together, with varying magnitudes, to get our kernel:
+b_cos0(x,r,F) := sum(F[i+1]*(cos(x*a0(i,r)) + (-1)^i),i,0,r);
+But wait, let's not set this in stone just yet.
 
+Next step is to figure out what F is supposed to be. The goal here is to create
+a kernel function with integrate(b_cos0(x),x,-1/2,1/2) = 1 (covering the central
+pixel), and integrate(b_cos0(x),x,j-1/2,j+1/2) = 0 for all integers j != 0 and
+-r <= j <= r (covering other pixels). This can be slightly rephrased and
+simplified as:
+integrate(b_cos0(x,r,F),x,0,j+1/2) = 1/2 for j in [0..r]
+
+Expand out the definition of b_cos0:
+integrate(sum(F[i+1]*(cos(x*a0(i,r)) + (-1)^i),i,0,r),x,0,j+1/2) = 1/2 for j in [0..r]
+
+Shift a few things outside the integral:
+sum(F[i+1]*integrate(cos(x*a0(i,r))+(-1)^i,x,0,j+1/2),i,0,r) = 1/2 for j in [0..r]
+
+And then evaluate the integral:
+sum(F[i+1]*(sin((j+1/2)*a0(i,r))/a0(i,r) + (j+1/2)*(-1)^i),i,0,r) = 1/2 for j in [0..r]
+
+The above can be phrased as a matrix equation, a(r) . b(r) = transpose(F):
+*/
 a(r) := genmatrix(lambda([j,i], sin((j+1/2)*a0(i,r))/a0(i,r) + (j+1/2)*(-1)^i),r,r,0,0);
 b(r) := transpose(makelist(1/2,r+1));
 
-/* Odd Maxima behavior: matrix([1]).matrix([1]) = 1, instead of matrix([1]). */
+/*
+F = fac(r). Solve for F:
+
+(Odd Maxima behavior: matrix([1]).matrix([1]) = 1, instead of matrix([1]).
+Unless I missed that day in math class or something.)
+*/
 fac(r) := if r = 0 then [1] else transpose(invert(float(a(r))) . b(r))[1];
+
+/*
+ifac(r) is for the integral of b_cos(r), ib_cos(r), defined below:
+*/
 ifac(r) := makelist(fac(r)[i+1] / float(a0(i,r)), i, 0, r);
 /* [wxMaxima: input   end   ] */
 
 /* [wxMaxima: input   start ] */
-ifac(9);
-/* [wxMaxima: input   end   ] */
+/*
+Back to our original definition of b_cos0:
+b_cos0(x,r,F) := sum(F[i+1]*(cos(x*a0(i,r)) + (-1)^i),i,0,r);
 
-/* [wxMaxima: input   start ] */
-/* b_cos0(x,r,Fac) := sum(Fac[i+1]*(cos(x*a0(i,r)) + (-1)^i),i,0,r); */
-/* b_cos0(x,r,Fac) := sum(Fac[i+1]*cos(x*a0(i,r)),i,0,r) + sum(Fac[i+1]*(-1)^i,i,0,r); */
-b_cos0(x,r,Fac) := sum(Fac[i+1]*cos(x*a0(i,r)),i,0,r) + (1/diam(r));
-b_cos(x,r,Fac) := if x >= -(r+1/2) and x <= r+1/2 then b_cos0(x,r,Fac) else 0;
+This can be simplified a bit. First, split off the (-1)^i factor:
+b_cos0(x,r,F) := sum(F[i+1]*cos(x*a0(i,r)),i,0,r) + sum(F[i+1]*(-1)^i,i,0,r);
 
-ib_cos0(x,r,iFac) := (x/diam(r)) + sum(iFac[i+1]*sin(x*a0(i,r)),i,0,r);
-ib_cos(x,r,iFac) :=
+Funny thing: that last bit always = 1/diam(r). (Proving this is left as an
+exercise for the reader. Ahem.) Thus:
+*/
+b_cos0(x,r,F) := sum(F[i+1]*cos(x*a0(i,r)),i,0,r) + (1/diam(r));
+
+/* So there's b_cos0. Let's zero out everything outside of our normal domain: */
+b_cos(x,r,F) := if x >= -(r+1/2) and x <= r+1/2 then b_cos0(x,r,F) else 0;
+
+/* ib_cos0, ib_cos: integral of b_cos0/b_cos. */
+ib_cos0(x,r,iF) := (x/diam(r)) + sum(iF[i+1]*sin(x*a0(i,r)),i,0,r);
+ib_cos(x,r,iF) :=
     if x < -(r+1/2) then -1/2
     elseif x > r+1/2 then 1/2
-    else ib_cos0(x,r,iFac);
+    else ib_cos0(x,r,iF);
 /* [wxMaxima: input   end   ] */
 
 /* [wxMaxima: input   start ] */
+/* Finally, here's our kernel, and its integral, for r = 2 and r = 3. */
 F2: fac(2);
 iF2: ifac(2);
 F3: fac(3);

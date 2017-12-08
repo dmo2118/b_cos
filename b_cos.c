@@ -3,6 +3,7 @@
 #include <assert.h>
 #include <math.h>
 
+/* See ifac(r) in Notes.wxm. */
 const float b_cos_ifac0[] = {0.1591549430919f};
 const float b_cos_ifac1[] = {0.30965176733713f, 0.075248412122618f};
 const float b_cos_ifac2[] = {0.34026032334082f, 0.16239654295838f, 0.047895901889277f};
