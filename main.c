@@ -13,6 +13,12 @@
 #include <stdlib.h>
 #include <string.h>
 
+// #define BENCHMARK
+
+#ifdef BENCHMARK
+#	include <sys/time.h>
+#endif
+
 #define arraysize(a) (sizeof(a) / sizeof(*(a)))
 
 static int _error(const char *prefix, const char *message)
@@ -368,6 +374,15 @@ unsigned _strtou(const char *nptr, const char **endptr)
 	return result;
 }
 
+#ifdef BENCHMARK
+double _double_time()
+{
+	struct timeval tv;
+	gettimeofday(&tv, NULL);
+	return tv.tv_sec + tv.tv_usec * 1e-6;
+}
+#endif
+
 int main(int argc, char **argv)
 {
 	if(argc != 6)
@@ -509,6 +524,10 @@ int main(int argc, char **argv)
 	// TODO: Unchecked unfreed malloc().
 	uint16_t *dest_row = malloc(channels * b_cos.dest_width * sizeof(*dest_row));
 
+#ifdef BENCHMARK
+	dest_png_name = "/dev/null";
+#endif
+
 	FILE *dest_fp = fopen(dest_png_name, "wb");
 	if(!dest_fp)
 	{
@@ -567,17 +586,29 @@ int main(int argc, char **argv)
 				png_set_swap(dest_png);
 #endif
 
+#ifdef BENCHMARK
+				double then = _double_time();
+#endif
+
 				if(b_cos_2d_init(&b_cos))
 				{
 					for(unsigned y = 0; y != b_cos.dest_height; ++y)
 					{
 						b_cos_2d_row(&b_cos, dest_row);
 
+#ifndef BENCHMARK
 						// PNG compression takes up most of the time here.
-						// Benchmarking? Comment png_write_rows out.
 						png_write_rows(dest_png, (png_bytepp)&dest_row, 1);
+#endif
 					}
 
+#ifdef BENCHMARK
+					double elapsed = _double_time() - then;
+					printf(
+						"Elapsed time: %g seconds, %g Mpixels/second\n",
+						elapsed,
+						1e-6 * ((b_cos.src_width * b_cos.src_height) + (b_cos.dest_width * b_cos.dest_height)) / elapsed);
+#endif
 					png_write_info(dest_png, dest_info);
 					result = EXIT_SUCCESS;
 				}
