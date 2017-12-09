@@ -51,6 +51,8 @@ a(r) := genmatrix(lambda([j,i], sin((j+1/2)*a0(i,r))/a0(i,r) + (j+1/2)*(-1)^i),r
 b(r) := transpose(makelist(1/2,r+1));
 
 /*
+(FWIW, numerical stability seems to break down above r = 30.)
+
 F = fac(r). Solve for F:
 
 (Odd Maxima behavior: matrix([1]).matrix([1]) = 1, instead of matrix([1]).
@@ -95,6 +97,22 @@ iF2: ifac(2);
 F3: fac(3);
 iF3: ifac(3);
 plot2d([b_cos(x,2,F2),ib_cos(x,2,iF2),b_cos(x,3,F3),ib_cos(x,3,iF3)],[x,-(3+0.5),3+0.5]);
+/* [wxMaxima: input   end   ] */
+
+/* [wxMaxima: input   start ] */
+/* And finally, comparison against other image reconstruction kernels: */
+nearest(x) := if abs(x) <= 1/2 then 1 else 0;
+linear(x) := if abs(x) <= 1 then 1 - abs(x) else 0;
+cubic(x,a) :=
+    if abs(x) <= 1 then (a + 2)*abs(x)^3 - (a + 3)*x^2 + 1
+    elseif abs(x) < 2 then a*abs(x)^3 - 5*a*abs(x)^2 + 8*a*abs(x) - 4*a
+    else 0;
+sinc(x) := if x = 0.0 then 1 else sin(%pi*x) / (%pi*x);
+lanczos(x,a) := if abs(x) <= a then sinc(x)*sinc(x/a) else 0;
+plot2d(
+    [nearest(x),linear(x),cubic(x,-0.5),lanczos(x,3),b_cos(x,2,F2)],
+    [x,-4,4],
+    [legend,"Nearest","Linear","Cubic","Lanczos","b_cos"]);
 /* [wxMaxima: input   end   ] */
 
 /* Maxima can't load/batch files which end with a comment! */
