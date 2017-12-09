@@ -35,15 +35,6 @@ static int _error_nomem(const char *prefix)
 	return _error_errno(prefix, ENOMEM);
 }
 
-static inline png_uint_16 _clip(double x)
-{
-	if(x < 0)
-		return 0;
-	if(x > 65535)
-		return 65535;
-	return (png_uint_16)x;
-}
-
 static const float *const b_cos_ifacs[] =
 {
 	b_cos_ifac0,
@@ -59,6 +50,7 @@ static const float *const b_cos_ifacs[] =
 };
 
 typedef uint8_t b_cos_2d_src_px; // Too many underscores?
+typedef uint8_t b_cos_2d_dest_px;
 
 struct b_cos_2d
 {
@@ -82,6 +74,16 @@ struct b_cos_2d
 
 	unsigned src_y0, y_src_offset, y_src_step, y_src_jump;
 };
+
+static inline b_cos_2d_dest_px _clip(float x)
+{
+	x += 0.5f;
+	if(x < 0)
+		return 0;
+	if(x > 255)
+		return 255;
+	return (b_cos_2d_dest_px)x;
+}
 
 static void _edge_x(
 	const struct b_cos_2d *self,
@@ -241,7 +243,7 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 			xfac0[i] += 0.5;
 	}
 
-	self->scale_fac = (65535 / 255) * (float)self->dest_width * self->dest_height / (self->src_width * self->src_height);
+	self->scale_fac = /* (65535 / 255) * */ (float)self->dest_width * self->dest_height / (self->src_width * self->src_height);
 
 	self->x_buffer = malloc(self->dest_width * 4 * sizeof(float) * B_COS_EDGE(self->radius));
 	self->x_buffer_start = 0;
@@ -282,7 +284,7 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 	return true;
 }
 
-void b_cos_2d_row(struct b_cos_2d *self, png_uint_16 *dest_row)
+void b_cos_2d_row(struct b_cos_2d *self, b_cos_2d_dest_px *dest_row)
 {
 	unsigned src_y1 = self->src_y0 + self->y_src_jump;
 	self->y_src_offset += self->y_src_step;
@@ -520,7 +522,7 @@ int main(int argc, char **argv)
 	const unsigned channels = 4;
 
 	// TODO: Unchecked unfreed malloc().
-	uint16_t *dest_row = malloc(channels * b_cos.dest_width * sizeof(*dest_row));
+	b_cos_2d_dest_px *dest_row = malloc(channels * b_cos.dest_width * sizeof(*dest_row));
 
 #ifdef BENCHMARK
 	dest_png_name = "/dev/null";
