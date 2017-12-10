@@ -117,7 +117,7 @@ void b_cos_edge(float *fac, unsigned r, const float *icos_fac, unsigned src, uns
 	float src_x0d = (float)(dest_x * src) / dst;
 	unsigned src_x0 = dest_x * src / dst;
 
-	for(unsigned i = 0; i != B_COS_EDGE(r); ++i)
+	for(unsigned i = 0; i != B_COS_DIAM(r); ++i)
 		fac[i] = _ib_cos(r, icos_fac, (src_x0d + (int)(r - i - src_x0)) - 0.5f);
 }
 

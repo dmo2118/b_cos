@@ -17,6 +17,6 @@ extern const float b_cos_ifac9[];
 void b_cos_edge(float *edge_fac, unsigned r, const float *icos_fac, unsigned src_size, unsigned dst_size, unsigned dest_x);
 unsigned b_cos_repeat(unsigned src, unsigned dst);
 
-#define B_COS_EDGE(r) ((r) * 2 + 1)
+#define B_COS_DIAM(r) ((r) * 2 + 1)
 
 #endif

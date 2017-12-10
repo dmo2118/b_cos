@@ -53,22 +53,12 @@ struct b_cos_2d
 
 	float *yfac0;
 	float *y_buf_expand;
-	float *y_sum_fac;
+	float *y_sum_edge;
 	float *y_sum;
 	unsigned y;
 
-	unsigned src_y0, y_src_offset, y_src_step, y_src_jump;
+	unsigned src_y0;
 };
-
-static inline b_cos_2d_dest_px _clip(float x)
-{
-	x += 0.5f;
-	if(x < 0)
-		return 0;
-	if(x > 255)
-		return 255;
-	return (b_cos_2d_dest_px)x;
-}
 
 static void _edge_x(
 	const struct b_cos_2d *self,
@@ -80,7 +70,7 @@ static void _edge_x(
 	for(unsigned ch = 0; ch != 4; ++ch)
 		sum_fac[ch] = 0;
 
-	for(unsigned i = 0; i != B_COS_EDGE(self->radius); ++i)
+	for(unsigned i = 0; i != B_COS_DIAM(self->radius); ++i)
 	{
 		int lo = src_x + i - self->radius;
 		if(lo < 0)
@@ -103,8 +93,8 @@ static void _expand_x(
 
 	const float *xfac0 = self->xfac;
 
-	float sum_fac[4];
-	_edge_x(self, xfac0, src_row, 0, sum_fac);
+	float sum_edge[4];
+	_edge_x(self, xfac0, src_row, 0, sum_edge);
 
 	unsigned
 		src_x0 = 0,
@@ -142,23 +132,17 @@ static void _expand_x(
 
 		float fsum[4];
 		for(unsigned ch = 0; ch != 4; ++ch)
-			fsum[ch] = isum[ch] - sum_fac[ch];
+			fsum[ch] = isum[ch] - sum_edge[ch];
 
-		xfac0 += B_COS_EDGE(self->radius);
-		_edge_x(self, xfac0, src_row, src_x1, sum_fac);
+		xfac0 += B_COS_DIAM(self->radius);
+		_edge_x(self, xfac0, src_row, src_x1, sum_edge);
 
 		for(unsigned ch = 0; ch != 4; ++ch)
-			dest_row[x * 4 + ch] = fsum[ch] + sum_fac[ch];
+			dest_row[x * 4 + ch] = fsum[ch] + sum_edge[ch];
 		// dest_row[x * 4 + 3] = src_row[src_x0 * 4 + 3];
 
 		src_x0 = src_x1;
 	}
-}
-
-void _clear_x(float *row, unsigned dest_width)
-{
-	for(unsigned i = 0; i != dest_width * 4; ++i)
-		row[i] = 0;
 }
 
 static inline const b_cos_2d_src_px *_y_seek(const struct b_cos_2d *self, unsigned y)
@@ -170,46 +154,36 @@ static float *_x_buffer_cache(const struct b_cos_2d *self, unsigned y)
 {
 	// TODO Replace these.
 	assert(y >= self->x_buffer_start);
-	assert(y < self->x_buffer_start + B_COS_EDGE(self->radius));
+	assert(y < self->x_buffer_start + B_COS_DIAM(self->radius));
+	assert(y < self->src_height);
 	return
 		self->x_buffer +
-		self->dest_width * 4 * ((self->x_buffer_offset + y - self->x_buffer_start) % B_COS_EDGE(self->radius));
+		self->dest_width * 4 * ((self->x_buffer_offset + y - self->x_buffer_start) % B_COS_DIAM(self->radius));
 }
 
 static void _edge_y(const struct b_cos_2d *self, int src_y, int dest_y)
 {
 	b_cos_edge(self->yfac0, self->radius, b_cos_ifacs[self->radius], self->src_height, self->dest_height, dest_y);
 
-	for(unsigned i = 0; i != B_COS_EDGE(self->radius); ++i)
-		self->yfac0[i] -= 0.5f;
+	for(unsigned i = 0; i != B_COS_DIAM(self->radius); ++i)
+		self->yfac0[i] = 0.5f - self->yfac0[i];
 
 	for(unsigned x = 0; x != self->dest_width * 4; ++x)
-		self->y_sum_fac[x] = 0;
+		self->y_sum_edge[x] = 0;
 
-	for(unsigned i = 0; i != B_COS_EDGE(self->radius); ++i)
+	for(unsigned i = 0; i != B_COS_DIAM(self->radius); ++i)
 	{
 		int lo = src_y + i - self->radius;
 		if(lo < 0)
 			lo = 0;
 		if((unsigned)lo >= self->src_height)
 			lo = self->src_height - 1;
-		assert(lo >= 0);
-		assert((unsigned)lo < self->src_height);
-
-		// _expand_x(self, _y_seek(self, lo), self->y_buf_expand);
-		// const float *x_src = self->y_buf_expand;
 
 		const float *x_src = _x_buffer_cache(self, lo);
 
 		for(unsigned x = 0; x != self->dest_width * 4; ++x)
-			self->y_sum_fac[x] += x_src[x] * self->yfac0[i];
+			self->y_sum_edge[x] += x_src[x] * self->yfac0[i];
 	}
-}
-
-void _mul_add_x(unsigned dest_width, float *src, float *dest, float fac)
-{
-	for(unsigned i = 0; i != dest_width * 4; ++i)
-		dest[i] += src[i] * fac;
 }
 
 void b_cos_2d_free(struct b_cos_2d *self)
@@ -218,7 +192,7 @@ void b_cos_2d_free(struct b_cos_2d *self)
 	free(self->x_buffer);
 	free(self->yfac0);
 	free(self->y_buf_expand);
-	free(self->y_sum_fac);
+	free(self->y_sum_edge);
 	free(self->y_sum);
 }
 
@@ -227,25 +201,27 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 	assert(self->src_width);
 	assert(self->src_height);
 
-	// TODO: Take repeat into account.
-	self->xfac = malloc(B_COS_EDGE(self->radius) * (self->dest_width + 1) * sizeof(float));
-	self->x_buffer = malloc(self->dest_width * 4 * sizeof(float) * B_COS_EDGE(self->radius));
-	self->yfac0 = malloc(B_COS_EDGE(self->radius) * sizeof(float));
+	self->xfac = malloc(B_COS_DIAM(self->radius) * (self->dest_width + 1) * sizeof(float));
+	self->x_buffer = malloc(self->dest_width * 4 * sizeof(float) * B_COS_DIAM(self->radius));
+	self->yfac0 = malloc(B_COS_DIAM(self->radius) * sizeof(float));
 	self->y_buf_expand = malloc(self->dest_width * 4 * sizeof(float));
-	self->y_sum_fac = malloc(self->dest_width * 4 * sizeof(float));
+
+	// y_sum and y_sum_edge are exchanged every row.
+	self->y_sum_edge = malloc(self->dest_width * 4 * sizeof(float));
 	self->y_sum = malloc(self->dest_width * 4 * sizeof(float));
 
-	if(!self->xfac || !self->x_buffer || !self->yfac0 || !self->y_buf_expand || !self->y_sum_fac || !self->y_sum)
+	if(!self->xfac || !self->x_buffer || !self->yfac0 || !self->y_buf_expand || !self->y_sum_edge || !self->y_sum)
 	{
 		b_cos_2d_free(self);
 		return false;
 	}
 
+	// TODO: Take b_cos_repeat() into account.
 	for(unsigned x = 0; x != self->dest_width + 1; ++x)
 	{
-		float *xfac0 = self->xfac + x * B_COS_EDGE(self->radius);
+		float *xfac0 = self->xfac + x * B_COS_DIAM(self->radius);
 		b_cos_edge(xfac0, self->radius, b_cos_ifacs[self->radius], self->src_width, self->dest_width, x);
-		for(unsigned i = 0; i != B_COS_EDGE(self->radius); ++i)
+		for(unsigned i = 0; i != B_COS_DIAM(self->radius); ++i)
 			xfac0[i] += 0.5;
 	}
 
@@ -256,17 +232,14 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 	{
 		const b_cos_2d_src_px *src_row = self->src;
 		float *dest_row = self->x_buffer;
-		for(unsigned y = 0; y != B_COS_EDGE(self->radius); ++y)
+		for(unsigned y = 0; y != B_COS_DIAM(self->radius); ++y)
 		{
-			if(y < self->dest_height)
+			if(y < self->src_height)
 			{
 				_expand_x(self, src_row, dest_row);
 				src_row += self->src_width * 4;
 			}
-			else
-			{
-				memcpy(dest_row, dest_row - self->dest_width * 4, sizeof(float) * 4 * self->dest_width);
-			}
+			// Last few rows may end up being uninitialized for very small images. This is fine.
 
 			dest_row += self->dest_width * 4;
 		}
@@ -275,9 +248,6 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 	_edge_y(self, 0, 0);
 
 	self->src_y0 = 0;
-	self->y_src_offset = 0;
-	self->y_src_step = self->src_height % self->dest_height;
-	self->y_src_jump = self->src_height / self->dest_height;
 	self->y = 0;
 
 	return true;
@@ -285,51 +255,48 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 
 void b_cos_2d_row(struct b_cos_2d *self, b_cos_2d_dest_px *dest_row)
 {
-	unsigned src_y1 = self->src_y0 + self->y_src_jump;
-	self->y_src_offset += self->y_src_step;
-	if(self->y_src_offset >= self->dest_height)
-	{
-		self->y_src_offset -= self->dest_height;
-		++src_y1;
-	}
-
-	assert(src_y1 == (self->y + 1) * self->src_height / self->dest_height);
+	unsigned src_y1 = (self->y + 1) * self->src_height / self->dest_height;
 	assert(self->src_y0 < self->src_height);
 	assert(src_y1 <= self->src_height);
 
-	for(unsigned x = 0; x != self->dest_width * 4; ++x)
-		self->y_sum[x] = 0;
-
 	// Slide the row cache forwards.
 	// This could be refactored with what's in b_cos_2d_init...?
-	// TODO: Clean up the logic here.
 	{
 		int new_x_buffer_start = (int)src_y1 - (int)self->radius;
 		if(new_x_buffer_start < 0)
 			new_x_buffer_start = 0;
-		if((unsigned)new_x_buffer_start >= self->src_height)
+		if((unsigned)new_x_buffer_start >= self->src_height) // Happens with radius = 0.
 			new_x_buffer_start = self->src_height - 1;
 		assert((unsigned)new_x_buffer_start >= self->x_buffer_start);
 		unsigned advance = new_x_buffer_start - self->x_buffer_start;
-		if(advance >= B_COS_EDGE(self->radius))
+		if(advance >= B_COS_DIAM(self->radius))
 		{
-			advance = B_COS_EDGE(self->radius);
+			advance = B_COS_DIAM(self->radius);
 			self->x_buffer_offset = 0;
 		}
 		else
 		{
-			self->x_buffer_offset = (self->x_buffer_offset + advance) % B_COS_EDGE(self->radius);
+			self->x_buffer_offset = (self->x_buffer_offset + advance) % B_COS_DIAM(self->radius);
 		}
 
 		self->x_buffer_start = new_x_buffer_start;
-		unsigned new_end = new_x_buffer_start + B_COS_EDGE(self->radius);
+		unsigned new_end = new_x_buffer_start + B_COS_DIAM(self->radius);
 
 		for(unsigned y = new_end - advance; y != new_end; ++y)
-			_expand_x(self, _y_seek(self, y < self->src_height ? y : self->src_height - 1), _x_buffer_cache(self, y));
+		{
+			if(y < self->src_height)
+				_expand_x(self, _y_seek(self, y < self->src_height ? y : self->src_height - 1), _x_buffer_cache(self, y));
+		}
 	}
 
-	// TODO: Merge this with _edge_y.
-	for(int i = (int)self->src_y0 + (int)self->radius + 1; i < (int)src_y1 + (int)self->radius + 1; ++i)
+	{
+		// At this point, y_sum_edge is from the previous row.
+		float *temp = self->y_sum;
+		self->y_sum = self->y_sum_edge;
+		self->y_sum_edge = temp;
+	}
+
+	for(unsigned i = self->src_y0 + self->radius + 1; i < src_y1 + self->radius + 1; ++i)
 	{
 		unsigned src_y = i;
 		if(src_y >= self->src_height)
@@ -352,16 +319,20 @@ void b_cos_2d_row(struct b_cos_2d *self, b_cos_2d_dest_px *dest_row)
 			self->y_sum[x] += row[x];
 	}
 
-	for(unsigned x = 0; x != self->dest_width * 4; ++x)
-		self->y_sum[x] -= self->y_sum_fac[x];
-
 	_edge_y(self, src_y1, self->y + 1);
 
 	for(unsigned x = 0; x != self->dest_width * 4; ++x)
-		dest_row[x] = _clip(self->scale_fac * (self->y_sum[x] + self->y_sum_fac[x]));
+	{
+		float val = self->scale_fac * (self->y_sum[x] - self->y_sum_edge[x]) + 0.5f;
+		if(val < 0)
+			val = 0;
+		if(val > 255)
+			val = 255;
+		dest_row[x] = (b_cos_2d_dest_px)val;
+	}
 
 //	for(unsigned x = 0; x != self->dest_width; ++x)
-//		dest_row[x * 4 + 3] = 0xffff;
+//		dest_row[x * 4 + 3] = 0xff;
 
 	self->src_y0 = src_y1;
 	++self->y;
@@ -421,7 +392,7 @@ int main(int argc, char **argv)
 {
 	if(argc != 6)
 	{
-		printf("Usage: %s src.png dest.png dest_width dest_height radius\n", *argv);
+		fprintf(stderr, "Usage: %s src.png dest.png dest_width dest_height radius\n", *argv);
 		return EXIT_FAILURE;
 	}
 
