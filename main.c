@@ -49,7 +49,7 @@ struct b_cos_2d
 	float scale_fac;
 	float *xfac;
 	float *x_buffer;
-	unsigned x_buffer_start, x_buffer_offset;
+	unsigned x_buffer_start;
 
 	float *yfac0;
 	float *y_buf_expand;
@@ -158,7 +158,7 @@ static float *_x_buffer_cache(const struct b_cos_2d *self, unsigned y)
 	assert(y < self->src_height);
 	return
 		self->x_buffer +
-		self->dest_width * 4 * ((self->x_buffer_offset + y - self->x_buffer_start) % B_COS_DIAM(self->radius));
+		self->dest_width * 4 * (y % B_COS_DIAM(self->radius));
 }
 
 static void _edge_y(const struct b_cos_2d *self, int src_y, int dest_y)
@@ -196,6 +196,22 @@ void b_cos_2d_free(struct b_cos_2d *self)
 	free(self->y_sum);
 }
 
+void _advance_y(struct b_cos_2d *self, unsigned new_x_buffer_start, unsigned advance)
+{
+	self->x_buffer_start = new_x_buffer_start;
+	unsigned new_end = self->x_buffer_start + B_COS_DIAM(self->radius);
+
+	unsigned y = new_end - advance;
+	if(new_end > self->src_height)
+		new_end = self->src_height;
+	while(y < new_end)
+	{
+		_expand_x(self, _y_seek(self, y), _x_buffer_cache(self, y));
+		// Last few rows may end up being uninitialized. This is fine.
+		++y;
+	}
+}
+
 bool b_cos_2d_init(struct b_cos_2d *self)
 {
 	assert(self->src_width);
@@ -227,23 +243,7 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 
 	self->scale_fac = /* (65535 / 255) * */ (float)self->dest_width * self->dest_height / (self->src_width * self->src_height);
 
-	self->x_buffer_start = 0;
-	self->x_buffer_offset = 0;
-	{
-		const b_cos_2d_src_px *src_row = self->src;
-		float *dest_row = self->x_buffer;
-		for(unsigned y = 0; y != B_COS_DIAM(self->radius); ++y)
-		{
-			if(y < self->src_height)
-			{
-				_expand_x(self, src_row, dest_row);
-				src_row += self->src_width * 4;
-			}
-			// Last few rows may end up being uninitialized for very small images. This is fine.
-
-			dest_row += self->dest_width * 4;
-		}
-	}
+	_advance_y(self, 0, B_COS_DIAM(self->radius));
 
 	_edge_y(self, 0, 0);
 
@@ -268,25 +268,12 @@ void b_cos_2d_row(struct b_cos_2d *self, b_cos_2d_dest_px *dest_row)
 		if((unsigned)new_x_buffer_start >= self->src_height) // Happens with radius = 0.
 			new_x_buffer_start = self->src_height - 1;
 		assert((unsigned)new_x_buffer_start >= self->x_buffer_start);
+
 		unsigned advance = new_x_buffer_start - self->x_buffer_start;
 		if(advance >= B_COS_DIAM(self->radius))
-		{
 			advance = B_COS_DIAM(self->radius);
-			self->x_buffer_offset = 0;
-		}
-		else
-		{
-			self->x_buffer_offset = (self->x_buffer_offset + advance) % B_COS_DIAM(self->radius);
-		}
 
-		self->x_buffer_start = new_x_buffer_start;
-		unsigned new_end = new_x_buffer_start + B_COS_DIAM(self->radius);
-
-		for(unsigned y = new_end - advance; y != new_end; ++y)
-		{
-			if(y < self->src_height)
-				_expand_x(self, _y_seek(self, y < self->src_height ? y : self->src_height - 1), _x_buffer_cache(self, y));
-		}
+		_advance_y(self, new_x_buffer_start, advance);
 	}
 
 	{
@@ -588,14 +575,15 @@ int main(int argc, char **argv)
 #endif
 				}
 
-#ifdef BENCHMARK
+#ifndef BENCHMARK
+				png_write_end(dest_png, NULL);
+#else
 				double elapsed = _double_time() - then;
 				printf(
 					"Elapsed time: %g seconds, %g Mpixels/second\n",
 					elapsed,
 					1e-6 * ((b_cos.src_width * b_cos.src_height) + (b_cos.dest_width * b_cos.dest_height)) / elapsed);
 #endif
-				png_write_end(dest_png, NULL);
 				result = EXIT_SUCCESS;
 			}
 
