@@ -9,6 +9,7 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <stdlib.h>
+#include <stdnoreturn.h>
 #include <string.h>
 
 // #define BENCHMARK
@@ -18,22 +19,6 @@
 #endif
 
 #define arraysize(a) (sizeof(a) / sizeof(*(a)))
-
-static int _error(const char *prefix, const char *message)
-{
-	fprintf(stderr, "%s: %s\n", prefix, message);
-	return EXIT_FAILURE;
-}
-
-static int _error_errno(const char *prefix, int error)
-{
-	return _error(prefix, strerror(error));
-}
-
-static int _error_nomem(const char *prefix)
-{
-	return _error_errno(prefix, ENOMEM);
-}
 
 static const float *const b_cos_ifacs[] =
 {
@@ -227,6 +212,16 @@ void _mul_add_x(unsigned dest_width, float *src, float *dest, float fac)
 		dest[i] += src[i] * fac;
 }
 
+void b_cos_2d_free(struct b_cos_2d *self)
+{
+	free(self->xfac);
+	free(self->x_buffer);
+	free(self->yfac0);
+	free(self->y_buf_expand);
+	free(self->y_sum_fac);
+	free(self->y_sum);
+}
+
 bool b_cos_2d_init(struct b_cos_2d *self)
 {
 	assert(self->src_width);
@@ -234,6 +229,17 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 
 	// TODO: Take repeat into account.
 	self->xfac = malloc(B_COS_EDGE(self->radius) * (self->dest_width + 1) * sizeof(float));
+	self->x_buffer = malloc(self->dest_width * 4 * sizeof(float) * B_COS_EDGE(self->radius));
+	self->yfac0 = malloc(B_COS_EDGE(self->radius) * sizeof(float));
+	self->y_buf_expand = malloc(self->dest_width * 4 * sizeof(float));
+	self->y_sum_fac = malloc(self->dest_width * 4 * sizeof(float));
+	self->y_sum = malloc(self->dest_width * 4 * sizeof(float));
+
+	if(!self->xfac || !self->x_buffer || !self->yfac0 || !self->y_buf_expand || !self->y_sum_fac || !self->y_sum)
+	{
+		b_cos_2d_free(self);
+		return false;
+	}
 
 	for(unsigned x = 0; x != self->dest_width + 1; ++x)
 	{
@@ -245,7 +251,6 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 
 	self->scale_fac = /* (65535 / 255) * */ (float)self->dest_width * self->dest_height / (self->src_width * self->src_height);
 
-	self->x_buffer = malloc(self->dest_width * 4 * sizeof(float) * B_COS_EDGE(self->radius));
 	self->x_buffer_start = 0;
 	self->x_buffer_offset = 0;
 	{
@@ -266,12 +271,6 @@ bool b_cos_2d_init(struct b_cos_2d *self)
 			dest_row += self->dest_width * 4;
 		}
 	}
-
-	self->yfac0 = malloc(B_COS_EDGE(self->radius) * sizeof(float));
-
-	self->y_buf_expand = malloc(self->dest_width * 4 * sizeof(float));
-	self->y_sum_fac = malloc(self->dest_width * 4 * sizeof(float));
-	self->y_sum = malloc(self->dest_width * 4 * sizeof(float));
 
 	_edge_y(self, 0, 0);
 
@@ -303,6 +302,7 @@ void b_cos_2d_row(struct b_cos_2d *self, b_cos_2d_dest_px *dest_row)
 
 	// Slide the row cache forwards.
 	// This could be refactored with what's in b_cos_2d_init...?
+	// TODO: Clean up the logic here.
 	{
 		int new_x_buffer_start = (int)src_y1 - (int)self->radius;
 		if(new_x_buffer_start < 0)
@@ -328,6 +328,7 @@ void b_cos_2d_row(struct b_cos_2d *self, b_cos_2d_dest_px *dest_row)
 			_expand_x(self, _y_seek(self, y < self->src_height ? y : self->src_height - 1), _x_buffer_cache(self, y));
 	}
 
+	// TODO: Merge this with _edge_y.
 	for(int i = (int)self->src_y0 + (int)self->radius + 1; i < (int)src_y1 + (int)self->radius + 1; ++i)
 	{
 		unsigned src_y = i;
@@ -383,6 +384,39 @@ double _double_time()
 }
 #endif
 
+static int _error(const char *prefix, const char *message)
+{
+	fprintf(stderr, "%s: %s\n", prefix, message);
+	return EXIT_FAILURE;
+}
+
+static void _error_errno(const char *prefix, int error)
+{
+	_error(prefix, strerror(error));
+}
+
+static void _error_nomem(char **argv)
+{
+	_error_errno(*argv, ENOMEM);
+}
+
+noreturn void _png_raise(png_structp png)
+{
+	longjmp(png_jmpbuf(png), 1);
+}
+
+noreturn void _png_raise_nomem(png_structp png, char **argv)
+{
+	_error_nomem(argv);
+	_png_raise(png);
+}
+
+noreturn void _png_raise_errno(png_structp png, const char *prefix)
+{
+	_error_errno(prefix, errno);
+	_png_raise(png);
+}
+
 int main(int argc, char **argv)
 {
 	if(argc != 6)
@@ -413,150 +447,131 @@ int main(int argc, char **argv)
 
 	// Rescaling an image can work from a moving window of several adjacent rows to output rows in the resampled image. If PNG
 	// always supported row-at-a-time loading, then there wouldn't be any need to load the entire image into memory. But PNG
-	// supports interlacing, so to handle that, let's just use png_read_png. png_image is another possibility, but current
+	// supports interlacing, so to handle that, let's just use png_read_image. png_image is another possibility, but current
 	// Ubuntu LTS doesn't have that.
+
 	int result = EXIT_FAILURE;
 
-	FILE *src_fp = fopen(src_png_name, "rb");
-	if(!src_fp)
+	png_structp src_png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
+	if (!src_png)
 	{
-		return _error_errno(src_png_name, errno);
+		_error_nomem(argv);
 	}
 	else
 	{
-		unsigned char src_header[8];
-		size_t header_size = fread(src_header, 1, sizeof(src_header), src_fp);
-		if(header_size != sizeof(src_header) && ferror(src_fp))
+		FILE *src_fp = NULL;
+		png_byte **row_pointers = NULL;
+		png_infop src_info = NULL;
+
+		if(!setjmp(png_jmpbuf(src_png)))
 		{
-			_error(src_png_name, "I/O error"); // C stdio doesn't do error codes.
-		}
-		else if(png_sig_cmp(src_header, 0, header_size)) // TODO: Wait, do I really need this?
-		{
-			_error(src_png_name, "not a PNG.");
-		}
-		else
-		{
-			png_structp src_png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
-			if (!src_png)
-			{
-				_error_nomem(*argv);
-			}
-			else
-			{
-				png_infop src_info = NULL;
+			src_info = png_create_info_struct(src_png);
+			if(!src_info)
+				_png_raise_nomem(src_png, argv);
 
-				if(!setjmp(png_jmpbuf(src_png)))
-				{
-					src_info = png_create_info_struct(src_png);
-					if(!src_info)
-					{
-						_error_nomem(*argv);
-						longjmp(png_jmpbuf(src_png), 1);
-					}
+			src_fp = fopen(src_png_name, "rb");
+			if(!src_fp)
+				_png_raise_errno(src_png, src_png_name);
+			png_init_io(src_png, src_fp);
 
-					png_init_io(src_png, src_fp);
-					png_set_sig_bytes(src_png, header_size);
+			// Using the low-level libpng APIs here because the high-level APIs free the image memory on shut down.
+			png_read_info(src_png, src_info);
+			int bit_depth, color_type;
+			png_get_IHDR(
+				src_png,
+				src_info,
+				&b_cos.src_width,
+				&b_cos.src_height,
+				&bit_depth,
+				&color_type,
+				NULL,
+				NULL,
+				NULL);
 
-					png_read_info(src_png, src_info);
-					int bit_depth, color_type;
-					png_get_IHDR(
-						src_png, 
-						src_info, 
-						&b_cos.src_width, 
-						&b_cos.src_height, 
-						&bit_depth, 
-						&color_type, 
-						NULL, 
-						NULL, 
-						NULL);
+			// libpng 1.2 doesn't have png_set_expand_16().
+			png_set_expand(src_png);
+			if(bit_depth == 16)
+				png_set_strip_16(src_png);
+			png_color_8 *sig_bit;
+			if(png_get_sBIT(src_png, src_info, &sig_bit))
+				png_set_shift(src_png, sig_bit);
+			if(bit_depth < 8)
+				png_set_packing(src_png);
+			if(!(color_type & PNG_COLOR_MASK_ALPHA))
+				png_set_filler(src_png, 0xff, PNG_FILLER_AFTER);
+			if((color_type & ~(int)PNG_COLOR_MASK_ALPHA) == PNG_COLOR_TYPE_GRAY)
+				png_set_gray_to_rgb(src_png);
 
-					png_set_expand(src_png);
-					if(bit_depth == 16)
-						png_set_strip_16(src_png);
-					png_color_8 *sig_bit;
-					if(png_get_sBIT(src_png, src_info, &sig_bit))
-						png_set_shift(src_png, sig_bit);
-					if(bit_depth < 8)
-						png_set_packing(src_png);
-					if(!(color_type & PNG_COLOR_MASK_ALPHA))
-						png_set_filler(src_png, 0xff, PNG_FILLER_AFTER);
-					if((color_type & ~(int)PNG_COLOR_MASK_ALPHA) == PNG_COLOR_TYPE_GRAY)
-						png_set_gray_to_rgb(src_png);
+			b_cos.src = malloc(b_cos.src_width * b_cos.src_height * 4);
+			if(!b_cos.src)
+				_png_raise_nomem(src_png, argv);
+			row_pointers = malloc(sizeof(png_byte *) * b_cos.src_height);
+			if(!row_pointers)
+				_png_raise_nomem(src_png, argv);
 
-					// TODO: Unchecked malloc().
-					b_cos.src = malloc(b_cos.src_width * b_cos.src_height * 4);
-					png_byte **row_pointers = malloc(sizeof(png_byte *) * b_cos.src_height);
+			for(unsigned y = 0; y != b_cos.src_height; ++y)
+				row_pointers[y] = (uint8_t *)b_cos.src + b_cos.src_width * 4 * y;
+			png_read_image(src_png, row_pointers);
 
-					for(unsigned y = 0; y != b_cos.src_height; ++y)
-						row_pointers[y] = (uint8_t *)b_cos.src + b_cos.src_width * 4 * y;
-					png_read_image(src_png, row_pointers);
-					free(row_pointers);
+			result = EXIT_SUCCESS;
 
-					// libpng 1.2 doesn't have PNG_TRANSFORM_EXPAND_16.
-					/*
-					png_read_png(
-						src_png,
-						src_info,
-						PNG_TRANSFORM_STRIP_16 | PNG_TRANSFORM_EXPAND | PNG_TRANSFORM_SHIFT | PNG_TRANSFORM_GRAY_TO_RGB,
-						NULL);
-					*/
+			/*
+			png_read_png(
+				src_png,
+				src_info,
+				PNG_TRANSFORM_STRIP_16 | PNG_TRANSFORM_EXPAND | PNG_TRANSFORM_SHIFT | PNG_TRANSFORM_GRAY_TO_RGB,
+				NULL);
 
-					
-
-					// png_get_rows(src_png, src_info);
-
-					// b_cos.src = NULL;
-					// b_cos.src_width = src_image.width;
-					// b_cos.src_height = src_image.height;
-
-					result = EXIT_SUCCESS;
-				}
-
-				png_destroy_read_struct(&src_png, &src_info, (png_infopp)NULL);
-			}
+			png_get_rows(src_png, src_info);
+			*/
 		}
 
+		png_destroy_read_struct(&src_png, &src_info, (png_infopp)NULL);
+		free(row_pointers);
 		fclose(src_fp);
 	}
 
-	const unsigned channels = 4;
-
-	// TODO: Unchecked unfreed malloc().
-	b_cos_2d_dest_px *dest_row = malloc(channels * b_cos.dest_width * sizeof(*dest_row));
-
-#ifdef BENCHMARK
-	dest_png_name = "/dev/null";
-#endif
-
-	FILE *dest_fp = fopen(dest_png_name, "wb");
-	if(!dest_fp)
+	if(result)
 	{
-		_error(dest_png_name, strerror(errno));
+	}
+	else if(!b_cos_2d_init(&b_cos))
+	{
+		_error_nomem(argv);
 	}
 	else
 	{
-		// Some apps can't handle 16-bit PNG w/ gamma = 1.0.
-		static_assert(CHAR_BIT == 8, "8 bits per byte. No exceptions.");
+		result = EXIT_FAILURE;
+
+		const unsigned channels = 4;
 
 		png_structp dest_png = png_create_write_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 		if(!dest_png)
 		{
-			_error_nomem(*argv);
+			_error_nomem(argv);
 		}
 		else
 		{
+			FILE *dest_fp = NULL;
+			b_cos_2d_dest_px *dest_row = NULL;
 			png_infop dest_info = NULL;
 
 			if(!setjmp(png_jmpbuf(dest_png)))
 			{
 				dest_info = png_create_info_struct(dest_png);
 				if(!dest_info)
-				{
-					_error_nomem(*argv);
-					longjmp(png_jmpbuf(dest_png), 1);
-				}
+					_png_raise_nomem(dest_png, argv);
 
+#ifdef BENCHMARK
+				dest_png_name = "/dev/null";
+#endif
+				dest_fp = fopen(dest_png_name, "wb");
+				if(!dest_fp)
+					_png_raise_errno(dest_png, dest_png_name);
 				png_init_io(dest_png, dest_fp);
+
+				dest_row = malloc(channels * b_cos.dest_width * sizeof(*dest_row));
+				if(!dest_row)
+					_png_raise_nomem(dest_png, argv);
 
 				int color_type = PNG_COLOR_TYPE_RGB_ALPHA;
 				// int color_type = src_image.format & PNG_FORMAT_FLAG_ALPHA ? PNG_COLOR_MASK_ALPHA : 0;
@@ -567,7 +582,7 @@ int main(int argc, char **argv)
 					dest_info,
 					b_cos.dest_width,
 					b_cos.dest_height,
-					sizeof(*dest_row) * 8,
+					sizeof(*dest_row) * CHAR_BIT,
 					color_type,
 					PNG_INTERLACE_NONE,
 					PNG_COMPRESSION_TYPE_DEFAULT,
@@ -590,36 +605,38 @@ int main(int argc, char **argv)
 				double then = _double_time();
 #endif
 
-				if(b_cos_2d_init(&b_cos))
-				{
-					png_write_info(dest_png, dest_info);
+				png_write_info(dest_png, dest_info);
 
-					for(unsigned y = 0; y != b_cos.dest_height; ++y)
-					{
-						b_cos_2d_row(&b_cos, dest_row);
+				for(unsigned y = 0; y != b_cos.dest_height; ++y)
+				{
+					b_cos_2d_row(&b_cos, dest_row);
 
 #ifndef BENCHMARK
-						// PNG compression takes up most of the time here.
-						png_write_rows(dest_png, (png_bytepp)&dest_row, 1);
+					// PNG compression takes up most of the time here.
+					png_write_rows(dest_png, (png_bytepp)&dest_row, 1);
 #endif
-					}
+				}
 
 #ifdef BENCHMARK
-					double elapsed = _double_time() - then;
-					printf(
-						"Elapsed time: %g seconds, %g Mpixels/second\n",
-						elapsed,
-						1e-6 * ((b_cos.src_width * b_cos.src_height) + (b_cos.dest_width * b_cos.dest_height)) / elapsed);
+				double elapsed = _double_time() - then;
+				printf(
+					"Elapsed time: %g seconds, %g Mpixels/second\n",
+					elapsed,
+					1e-6 * ((b_cos.src_width * b_cos.src_height) + (b_cos.dest_width * b_cos.dest_height)) / elapsed);
 #endif
-					png_write_end(dest_png, NULL);
-					result = EXIT_SUCCESS;
-				}
+				png_write_end(dest_png, NULL);
+				result = EXIT_SUCCESS;
 			}
 
 			png_destroy_write_struct(&dest_png, &dest_info);
+			free(dest_row);
+			fclose(dest_fp);
+
+			if(dest_fp && result)
+				remove(dest_png_name);
 		}
 
-		fclose(dest_fp);
+		b_cos_2d_free(&b_cos);
 	}
 
 	free((void *)b_cos.src);
