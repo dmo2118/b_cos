@@ -28,8 +28,8 @@ Voxel is Not a Little Cube)](http://alvyray.com/Memos/CG/Microsoft/6_pixel.pdf).
 Ultimately, this calls for a
 [reconstruction kernel](https://en.wikipedia.org/wiki/Signal_reconstruction) —
 let's call it b\_cos(x) — such that ∫b\_cos(_x_) _dx_ = 1 in the range [-0.5,
-0.5], but for any range [j-0.5, j+0.5] where j is an integer ≠ 0, ∫b_cos(x) dx =
-0.
+0.5], but for any range [j-0.5, j+0.5] where j is an integer ≠ 0, ∫b_cos(_x_)
+_dx_ = 0.
 
 The kernel implemented here is built from a sum of cosine waves of varying
 frequencies and magnitudes. The result looks a bit like a
@@ -38,7 +38,7 @@ b\_cos kernel stops at half-integers rather than integers. The b\_cos kernel
 has a greater magnitude as well. [Notes.wxm](Notes.wxm) explains in further
 detail how the math works.
 
-It looks like this:
+It looks like this (radius = 2):
 
 ![b_cos kernel](doc/kernel.png)
 
@@ -55,7 +55,8 @@ make
 
 `dest_width` and `dest_height` must both be integers greater than 0. `radius` is
 the number of neighboring pixels covered by the kernel (try `2`) — larger gives
-rounder features, but it has more ringing artifacts, and it's slower to run.
+rounder features, but it has more ringing artifacts, and it's somewhat slower to
+run.
 
 ## Examples
 
@@ -73,12 +74,12 @@ larger. For reference purposes, here it is with nearest neighbor resampling:
 
 ![Nearest neighbor @ 384x480](doc/nearest.png)
 
-Here it is with `b_cos original.png small.png 384 480 1`. Pixels from the
-original are pretty obvious, but they blend into one another.
+Here it is with `b_cos small.png r1.png 384 480 1`. Pixels from the
+original are pretty obvious, but they do blend into one another.
 
 ![radius = 1 @ 384x480](doc/r1.png)
 
-Again, with `b_cos original.png small.png 384 480 2`. With radius = 2, things
+Again, with `b_cos small.png r2.png 384 480 2`. With radius = 2, things
 look much closer to
 [bicubic](https://en.wikipedia.org/wiki/Bicubic_interpolation) or
 [Lanczos](https://en.wikipedia.org/wiki/Lanczos_resampling) resampling as
@@ -88,7 +89,7 @@ compromise between ringing and blockiness.
 
 ![radius = 2 @ 384x480](doc/r2.png)
 
-And again, with `b_cos original.png small.png 384 480 3`. Radius = 3 doesn't add
+And again, with `b_cos small.png r3.png 384 480 3`. Radius = 3 doesn't add
 much of value, but it does add more
 [ringing](https://en.wikipedia.org/wiki/Ringing_artifacts):
 
