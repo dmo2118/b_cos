@@ -40,7 +40,7 @@ detail how the math works.
 
 It looks like this:
 
-![b_cos kernel](kernel.png)
+![b_cos kernel](doc/kernel.png)
 
 `b_cos` (the program) does simple integration on the two-dimensional surface
 obtained by applying the b\_cos reconstruction kernel to the source image in
